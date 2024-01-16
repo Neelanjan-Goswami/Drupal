@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#
+# Simple wrapper for drupal console with DockerComposeDrupal.
+#
+# Depends on:
+#  docker
+#  DockerComposeDrupal
+
+_SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$_SOURCE" ]; do
+  _DIR="$( cd -P "$( dirname "$_SOURCE" )" && pwd )"
+  _SOURCE="$(readlink "$_SOURCE")"
+  [[ $_SOURCE != /* ]] && _SOURCE="$_DIR/$_SOURCE"
+done
+_DIR="$( cd -P "$( dirname "$_SOURCE" )" && pwd )"
+
+if [ ! -f $_DIR/helpers/common.sh ]; then
+  echo -e "(ERROR] Missing helpers/common.sh file."
+  exit 1
+fi
+source $_DIR/helpers/common.sh
+
+_docker_exec \
+  "${DRUPAL_BIN}" --root="${DRUPAL_DOCROOT}" "$@"

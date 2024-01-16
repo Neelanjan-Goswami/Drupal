@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+#
+# Helper to run postgres dump/restore, part of Docker compose Drupal project.
+# https://github.com/Mogtofu33/docker-compose-drupal
+#
+# Usage:
+#   pgsql dump | restore
+#
+# Depends on:
+#  docker
+#
+# Bash Boilerplate: https://github.com/alphabetum/bash-boilerplate
+# Bash Boilerplate: Copyright (c) 2015 William Melody • hi@williammelody.com
+
+_SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$_SOURCE" ]; do
+  _DIR="$( cd -P "$( dirname "$_SOURCE" )" && pwd )"
+  _SOURCE="$(readlink "$_SOURCE")"
+  [[ $_SOURCE != /* ]] && _SOURCE="$_DIR/$_SOURCE"
+done
+_DIR="$( cd -P "$( dirname "$_SOURCE" )" && pwd )"
+
+if [ ! -f $_DIR/helpers/common.sh ]; then
+  printf "[ERROR] Missing helpers/common.sh file.\\n"
+  exit 1
+fi
+
+source $_DIR/helpers/common.sh
+
+###############################################################################
+# Help
+###############################################################################
+
+# _print_help()
+#
+# Usage:
+#   _print_help
+#
+# Print the program help information.
+_print_help() {
+  _help_logo
+  cat <<HEREDOC
+Helper to dump and restore PGSQL db with pg_dump and pg_restore.
+
+Usage:
+  ${_ME} [ (import | restore) ] [ (optional) Dump filename]
+  ${_ME} [ (dump | backup) | drop | create ]
+  ${_ME} list | l
+    List all available dumps.
+
+Options:
+  -h --help  Show this screen.
+HEREDOC
+}
+
+###############################################################################
+# Program Functions
+###############################################################################
+
+_create() {
+  _pgsql_exec \
+    'createdb -e -U $POSTGRES_USER --owner="$POSTGRES_USER" "'"${_DB_NAME}"'"'
+  _pgsql_exec \
+    'psql -U $POSTGRES_USER -e -d '${_DB_NAME}' -c "GRANT ALL ON database '${_DB_NAME}' TO '${POSTGRES_USER}'"'
+}
+
+_drop() {
+  _pgsql_exec \
+    'dropdb -U $POSTGRES_USER --if-exists "'"${_DB_NAME}"'"'
+}
+
+_fix() {
+  _USER_NAME=${1:-"drupal"}
+  _pgsql_exec \
+    'createuser -d -r -s "'"${_USER_NAME}"'"'
+}
+
+_dump() {
+  _set_dump_file
+
+  printf "\\nDump %s to %s\\n\\n" "${_DB_NAME}" "${_DUMP_FILE}"
+
+  _pgsql_exec_u \
+    'pg_dump -d "'"${_DB_NAME}"'" -U "'"${POSTGRES_USER}"'" -hlocalhost -Fc -c -b -f "'"/dump/${_DUMP_FILE}"'" --exclude-table-data="*.cache*" --exclude-table-data="*.cachetags*" --exclude-table-data="*.watchdog*" --exclude-table-data="*.node_access*" --exclude-table-data="*.search_api_db_*" --exclude-table-data="*.sessions*" --exclude-table-data="*.webprofiler*"'
+
+  if [ -f "${DUMP_FOLDER}/${_DUMP_FILE}" ]; then
+    printf "\\nDatabase dump saved to %s\\n\\n" ${_DUMP_FILE}
+    _pgsql_exec 'chmod -R 777 /dump'
+    _list
+  else
+    printf "\\n[ERROR] Database dump failed!%s\\n\\n"
+  fi
+}
+
+_restore() {
+  _set_dump_file
+
+  if [ -z "$_DUMP_FILE" ]; then
+    _select_dump
+  fi
+
+  if ! [ -f "${DUMP_FOLDER}/${_DUMP_FILE}" ]; then
+    printf "File not found: %s\\n" "${DUMP_FOLDER}/${_DUMP_FILE}"
+    _select_dump
+  fi
+
+  if [ ! -z "$_DUMP_FILE" ]; then
+    printf "Restoring %s...\\n" $_DUMP_FILE
+    _drop
+    _create
+    _pgsql_exec \
+      'pg_restore -h localhost -p 5432 --no-owner --role="$POSTGRES_USER" -U "$POSTGRES_USER" -d "$POSTGRES_DB" "'"/dump/${_DUMP_FILE}"'"'
+    printf "... Done\\n"
+  fi
+}
+
+_list() {
+  printf "Available dump files:\\n"
+  __list=$(ls -lAh "${DUMP_FOLDER}")
+  printf "%s\\n" "$__list"
+}
+
+_select_dump() {
+
+  _DUMPS=$(ls "${DUMP_FOLDER}")
+  _DUMPS=(`echo $_DUMPS | sed 's/ /\n/g'`)
+
+  printf "Select a dump file:\\n"
+  select opt in "Cancel" "${_DUMPS[@]}"; do
+    case $opt in
+      *.pg_dump|*.pgdump)
+        _DUMP_FILE=$opt
+        break
+        ;;
+      "Cancel")
+        echo "You chose to cancel"
+        _DUMP_FILE=""
+        break
+        ;;
+      *)
+        echo "This is not a number or wrong selection/file format"
+        ;;
+    esac
+  done
+
+}
+
+_pgsql_exec() {
+  $DOCKER exec \
+    "${PROJECT_CONTAINER_PGSQL}" \
+      sh -c $@
+}
+
+_pgsql_exec_u() {
+  $DOCKER exec -t -u postgres \
+    "${PROJECT_CONTAINER_PGSQL}" \
+      sh -c $@
+}
+
+_ensure_dump_dir() {
+  if [[ ! -d ${DUMP_FOLDER} ]]
+  then
+    mkdir -p ${DUMP_FOLDER}
+  fi
+  _pgsql_exec 'mkdir -p "'"$DUMP_FOLDER_IMAGE"'"'
+  _pgsql_exec 'chown -R postgres:postgres "'"$DUMP_FOLDER_IMAGE"'"'
+  _pgsql_exec 'chmod -R 777 "'"$DUMP_FOLDER_IMAGE"'"'
+}
+
+_set_dump_file() {
+  if [ -z ${_DUMP_FILE} ]; then
+    _DUMP_FILE=dump_${NOW}.pg_dump
+  fi
+}
+
+_test() {
+  _DUMP_FILE=dump_test.pg_dump
+  _dump
+  _restore
+  _list
+}
+
+###############################################################################
+# Main
+###############################################################################
+
+# _main()
+#
+# Usage:
+#   _main [<options>] [<arguments>]
+#
+# Description:
+#   Entry point for the program, handling basic option parsing and dispatching.
+_main() {
+
+  _set_container_pgsql
+  _ensure_dump_dir
+  _DB_NAME=$POSTGRES_DB
+  _DUMP_FILE=${2:-}
+
+  # Run command if exist.
+  __call="_${1:-}"
+  if [ "$(type -t "${__call}")" == 'function' ]; then
+    $__call
+  else
+    _print_help
+  fi
+
+}
+
+# Call `_main` after everything has been defined.
+_main "$@"

@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+#
+# Helper to run mysql dump/restore with DockerComposeDrupal.
+#
+# Usage:
+#   mysql dump | restore
+#
+# Depends on:
+#  docker
+#  DockerComposeDrupal
+#
+# Bash Boilerplate: https://github.com/alphabetum/bash-boilerplate
+# Bash Boilerplate: Copyright (c) 2015 William Melody • hi@williammelody.com
+
+_SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$_SOURCE" ]; do
+  _DIR="$( cd -P "$( dirname "$_SOURCE" )" && pwd )"
+  _SOURCE="$(readlink "$_SOURCE")"
+  [[ $_SOURCE != /* ]] && _SOURCE="$_DIR/$_SOURCE"
+done
+_DIR="$( cd -P "$( dirname "$_SOURCE" )" && pwd )"
+
+if [ ! -f $_DIR/helpers/common.sh ]; then
+  printf "[ERROR] Missing helpers/common.sh file.\\n"
+  exit 1
+fi
+
+source $_DIR/helpers/common.sh
+
+###############################################################################
+# Help
+###############################################################################
+
+# _print_help()
+#
+# Usage:
+#   _print_help
+#
+# Print the program help information.
+_print_help() {
+  _help_logo
+  cat <<HEREDOC
+
+Helper to dump, drop and restore MYSQL/MariaDB.
+
+Usage:
+  ${_ME} restore
+  ${_ME} restore -f my-dump.sql
+  ${_ME} dump
+  ${_ME} list
+
+Arguments: 
+  import | restore    Restore from a db dump.
+  dump_native         Use mysql client for dump a database.
+  drop_native         Use mysql client for drop a database.
+  create              Use mysql client to create and grant a database, default
+                      to 'drupal'.
+  dump                Dump with drush, need an installed Drupal, ignore cache
+                      tables, search, stats and sessions tables from Drupal.
+  drop                Drop with drush, need an installed Drupal.
+
+Options with argument:
+  -f --file         Optional dump filename from dump folder.
+  -d --database     Optional database name, default 'drupal'.
+
+Dumps are located in the ./database/dump folder of Docker compose Drupal.
+
+Options:
+  -h --help         Show this screen.
+HEREDOC
+}
+
+# Parse Options ###############################################################
+
+# Initialize program option variables.
+_PRINT_HELP=0
+
+# Initialize additional expected option variables.
+_CMD="list"
+_DB_NAME="drupal"
+_DUMP_FILE="dump.sql"
+
+# _require_argument()
+#
+# Usage:
+#   _require_argument <option> <argument>
+#
+# If <argument> is blank or another option, print an error message and  exit
+# with status 1.
+_require_argument() {
+  # Set local variables from arguments.
+  #
+  # NOTE: 'local' is a non-POSIX bash feature and keeps the variable local to
+  # the block of code, as defined by curly braces. It's easiest to just think
+  # of them as local to a function.
+  local _option="${1:-}"
+  local _argument="${2:-}"
+
+  if [[ -z "${_argument}" ]] || [[ "${_argument}" =~ ^- ]]
+  then
+    _die printf "Option requires a argument: %s\\n" "${_option}"
+  fi
+}
+
+while [[ ${#} -gt 0 ]]
+do
+  __option="${1:-}"
+  __maybe_param="${2:-}"
+  case "${__option}" in
+    -h|--help)
+      _PRINT_HELP=1
+      ;;
+    -f|--file)
+      _require_argument "${__option}" "${__maybe_param}"
+      _DUMP_FILE="${__maybe_param}"
+      shift
+      ;;
+    -d|--database)
+      _require_argument "${__option}" "${__maybe_param}"
+      _DB_NAME="${__maybe_param}"
+      shift
+      ;;
+    --endopts)
+      # Terminate option parsing.
+      break
+      ;;
+    -*)
+      _die printf "Unexpected option: %s\\n" "${__option}"
+      ;;
+    *)
+      _CMD=${__option}
+      ;;
+  esac
+  shift
+done
+
+###############################################################################
+# Program Functions
+###############################################################################
+
+_create() {
+  _mysql_exec 'exec mysql -uroot -p$MYSQL_ROOT_PASSWORD -e "CREATE DATABASE IF NOT EXISTS "'"$_DB_NAME"'" CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"'
+
+  _GRANT="GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, INDEX, ALTER, CREATE TEMPORARY TABLES ON $_DB_NAME.* TO '$MYSQL_USER'@'%';"
+  echo $_GRANT > /tmp/tmp_grant.sql
+  $DOCKER cp /tmp/tmp_grant.sql "${PROJECT_CONTAINER_MYSQL}":/tmp/tmp_grant.sql
+  _mysql_exec 'exec mysql -uroot -p$MYSQL_ROOT_PASSWORD < /tmp/tmp_grant.sql'
+  rm -f /tmp/tmp_grant.sql
+}
+
+_drop_native() {
+  _mysql_exec 'exec mysql -uroot -p$MYSQL_ROOT_PASSWORD -e "DROP DATABASE IF EXISTS "'"$_DB_NAME"''
+}
+
+_drop() {
+  if ! [ -f ${STACK_DRUPAL_ROOT}/vendor/drush/drush/drush ]; then
+    _drop_native
+  else
+    _docker_exec_noi \
+      "${DRUSH_BIN}" --root "${DRUPAL_DOCROOT}" -y sql-drop
+  fi
+}
+
+_dump() {
+  _set_dump_file
+  if ! [ -f "${STACK_DRUPAL_ROOT}/vendor/drush/drush/drush" ]; then
+    printf "Drush not found, fallback to mysql dump"
+    _dump_native
+  else
+    _docker_exec_noi \
+      "${DRUSH_BIN}" --root "${DRUPAL_DOCROOT}" sql-dump \
+        --structure-tables-list=cache*,history,node_counter,search_*,sessions,watchdog \
+        --result-file="/dump/${_DUMP_FILE}"
+  fi
+}
+
+_dump_native() {
+  _set_dump_file
+  _mysql_exec 'exec mysqldump -u$MYSQL_USER -p$MYSQL_PASSWORD "'"$_DB_NAME"'" > /dump/'"$_DUMP_FILE"''
+  printf "Database dump saved to %s\\n" ${DUMP_FOLDER}/${_DUMP_FILE}
+}
+
+_restore() {
+  _set_dump_file
+
+  if [ -z "$_DUMP_FILE" ]; then
+    _select_dump
+  fi
+  if ! [ -f "${DUMP_FOLDER}/${_DUMP_FILE}" ]; then
+    printf "File not found: %s\\n" "${DUMP_FOLDER}/${_DUMP_FILE}"
+    _select_dump
+  fi
+
+  printf "Restoring %s...\\n" $_DUMP_FILE
+  _drop_native
+  _create
+  _mysql_exec 'exec mysql -u$MYSQL_USER -p$MYSQL_PASSWORD "'"$_DB_NAME"'" < /dump/'"$_DUMP_FILE"''
+
+  printf "... Done!\n"
+}
+
+_import() {
+  _restore
+}
+
+_list() {
+  printf "Available dump files:\\n"
+  __list=$(ls -lAh "${DUMP_FOLDER}")
+  printf "%s\\n" "$__list"
+}
+
+_select_dump() {
+
+  _DUMPS=$(ls "${DUMP_FOLDER}")
+  _DUMPS=(`echo $_DUMPS | sed 's/ /\n/g'`)
+
+  printf "Select a dump file:\\n"
+  select opt in "Cancel" "${_DUMPS[@]}"; do
+    case $opt in
+      *.sql)
+        _DUMP_FILE=$opt
+        break
+        ;;
+      "Cancel")
+        die "You chose to cancel"
+        _DUMP_FILE=""
+        break
+        ;;
+      *)
+        echo "This is not a number or wrong selection/file format"
+        ;;
+    esac
+  done
+}
+
+_mysql_exec() {
+  $DOCKER exec \
+    "${PROJECT_CONTAINER_MYSQL}" \
+      sh -c $@
+}
+
+_ensure_dump_dir() {
+  if [[ ! -d ${DUMP_FOLDER} ]]
+  then
+    mkdir -p ${DUMP_FOLDER}
+  fi
+  _mysql_exec 'mkdir -p "'"$DUMP_FOLDER_IMAGE"'"'
+  _mysql_exec 'chown -R mysql:mysql "'"$DUMP_FOLDER_IMAGE"'"'
+  _mysql_exec 'chmod -R 777 "'"$DUMP_FOLDER_IMAGE"'"'
+}
+
+_set_dump_file() {
+  if [ -z ${_DUMP_FILE} ]; then
+    _DUMP_FILE=dump_${NOW}.sql
+  fi
+}
+
+_test_native() {
+  _DUMP_FILE=dump_test_no_drush.sql
+  _dump
+  if [ -f ${DUMP_FOLDER}/${_DUMP_FILE} ]; then
+    echo "... Dump success!"
+  fi
+  _restore
+  _list
+}
+
+_test_drush() {
+  if ! [ -f ${STACK_DRUPAL_ROOT}/vendor/drush/drush/drush ]; then
+    echo "[Warning] Could not find Drush, tests skipped, did you install Drupal 8 with Drush?"
+  fi
+  _DUMP_FILE=dump_test_drush.sql
+  _dump
+  _restore
+  _list
+  _drop
+}
+
+_test() {
+  _test_native
+  _test_drush
+}
+
+###############################################################################
+# Main
+###############################################################################
+
+# _main()
+#
+# Usage:
+#   _main [<options>] [<arguments>]
+#
+# Description:
+#   Entry point for the program, handling basic option parsing and dispatching.
+_main() {
+
+  if ((_PRINT_HELP))
+  then
+    _print_help
+  else
+
+    _set_container_mysql
+    _ensure_dump_dir
+
+    # Run command if exist.
+    __call="_${_CMD}"
+    if [ "$(type -t "${__call}")" == 'function' ]; then
+      $__call
+    else
+      printf "Unknown command: %s" "${_CMD}"
+    fi
+
+  fi
+
+}
+
+# Call `_main` after everything has been defined.
+_main "$@"
