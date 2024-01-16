@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  {% block head %}
+  <meta charset="utf-8">
+  <meta content="width=device-width, initial-scale=1, shrink-to-fit=no" name="viewport">
+  <title>{%- block title %}{% endblock -%}</title>
+  <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.ico') }}">
+  <link href="{{ url_for('static', filename='assets/bootstrap.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', filename='assets/octicons/octicons.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static',filename='app.css') }}" rel="stylesheet">
+  {% endblock %}
+</head>
+
+<body>
+
+  {% set project_url = 'https://gitlab.com/mog33/docker-compose-drupal' %}
+  <!-- Page Content -->
+  <div class="container-fluid my-3">
+
+    <!-- Content Header -->
+    <div class="row">
+      <div class="col">
+        <h4>
+          <a href="{{ project_url }}" target="_blank"><span class="badge badge-info">Docker Compose Drupal</span></a>
+          <small>Docker full stack for simple Drupal dev.</small>
+        </h4>
+        <p>
+          <a class="btn btn-sm btn-outline-info" href="{{ project_url }}" target="_blank" role="button">
+            <span class="octicon octicon-home" aria-hidden="true"></span> Project homepage
+          </a>
+          <a class="btn btn-sm btn-outline-secondary" href="{{ project_url }}/blob/master/README.md" target="_blank">
+            <span class="octicon octicon-book" aria-hidden="true"></span> Documentation
+          </a>
+          <a class="btn btn-sm btn-outline-warning" href="{{ project_url }}/issues" target="_blank">
+            <span class="octicon octicon-bug" aria-hidden="true"></span> Bug report
+          </a>
+        </p>
+      </div>
+    </div>
+
+    <!-- Content -->
+    {% block content %}{% endblock %}
+
+  </div>
+  <!-- /.container -->
+
+  <!-- Modal -->
+  <div class="modal fade" id="myModal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-lg" role="document">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title"></h5>
+          <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+            <span aria-hidden="true">&times;</span>
+          </button>
+        </div>
+        <div class="modal-body"></div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+          <button type="button" class="btn btn-primary refresh" autocomplete="off">
+            <span class="octicon octicon-sync" aria-hidden="true"></span> Refresh
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- /.Modal -->
+
+  <!-- jQuery-->
+  <script src="{{ url_for('static', filename='assets/jquery.js') }}"></script>
+  <!-- Popper-->
+  <script src="{{ url_for('static', filename='assets/popper.js') }}"></script>
+  <!-- Bootstrap 4 -->
+  <script src="{{ url_for('static', filename='assets/bootstrap.js') }}"></script>
+  <!-- Clipboard -->
+  <script src="{{ url_for('static', filename='assets/clipboard.js') }}"></script>
+  <!-- App -->
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+
+  {% block extra_js %}{% endblock %}
+</body>
+
+</html>
